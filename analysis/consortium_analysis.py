@@ -14,7 +14,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RES = json.load(open(os.path.join(HERE, "..", "harness", "consortium_results.json")))
+# Prefer a fresh run; fall back to the published results so that a reviewer can
+# regenerate Table V and Figure 1 without first spending ~15 minutes running the
+# consortium benchmark.
+_fresh = os.path.join(HERE, "..", "harness", "consortium_results.json")
+_pub = os.path.join(HERE, "..", "results", "consortium_results.json")
+_src = _fresh if os.path.exists(_fresh) else _pub
+RES = json.load(open(_src))
+print(f"source: {'fresh run' if _src == _fresh else 'published results/'} ({_src})")
 
 C = {"prop": "#2166AC", "incl": "#B2182B", "fit": "#D6881A"}
 plt.rcParams.update({
