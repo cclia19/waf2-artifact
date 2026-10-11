@@ -1,0 +1,269 @@
+(* ===================================================================
+   WAF-2 — PERFECT FORWARD SECRECY
+   A single honest session completes in phase 0. At phase 1 the adversary is
+   handed EVERY long-term signing key in the system: the device's, the visited
+   network's, and the issuer's. The question is whether it can then recover the
+   session key of the earlier run.
+   Expected: secrecy of probeKey still holds, because the session key comes
+   from ephemeral Diffie-Hellman and the long-term keys only authenticate it.
+   A single session suffices: replication would let the adversary simply run a
+   NEW session with the leaked keys, which is not what forward secrecy asks.
+   =================================================================== *)
+(* ===================================================================
+   WAF-2: cross-domain Wi-Fi roaming authentication
+   Formal model in the applied pi-calculus — ProVerif 2.05
+
+   WHAT IS MODELLED
+   The novel layer only: mutual authentication and session-key agreement
+   between a roaming Supplicant (S) and the Authentication Server (AS) of a
+   VISITED access network, where S's authorisation is established by a
+   consortium-ledger lookup rather than by a federated RADIUS proxy chain.
+
+   The protocol terminates in an MSK, from which PMK = first 256 bits
+   (RFC 5247 Sec 1.2). The subsequent IEEE 802.11i 4-way handshake is
+   deliberately NOT remodelled here: it is unmodified and has been analysed
+   elsewhere. The point of this model is that WAF-2 supplies a PMK with the
+   same guarantees that a local 802.1X authentication would, so the link
+   layer is not weakened by roaming.
+
+   PRIVACY INVARIANT MODELLED
+   The ledger stores only tag = h(cid). The credential nonce cid is never
+   sent in the clear; we verify it stays secret from the Dolev-Yao attacker.
+   No MAC address, IP address or user identifier appears anywhere.
+
+   ADVERSARY
+   Standard Dolev-Yao on the public channel c: reads, intercepts, modifies,
+   injects, replays. The attacker additionally:
+     - holds a valid consortium membership key of its own (a MALICIOUS
+       MEMBER AP), published via the ledger;
+     - may run unboundedly many sessions in either role.
+   This is strictly stronger than the outsider model, and it is the realistic
+   one: the whole premise is that consortium members do not trust each other.
+   =================================================================== *)
+
+free c: channel.
+
+(* ---------- types ---------- *)
+type sskey.    (* signing private key  *)
+type spkey.    (* signing public key   *)
+type G.        (* DH group element     *)
+type exponent.
+
+(* ---------- Diffie-Hellman ---------- *)
+const g: G.
+fun exp(G, exponent): G.
+equation forall x: exponent, y: exponent;
+    exp(exp(g, x), y) = exp(exp(g, y), x).
+
+(* ---------- digital signatures ---------- *)
+fun spk(sskey): spkey.
+fun sign(bitstring, sskey): bitstring.
+reduc forall m: bitstring, k: sskey; getmsg(sign(m, k)) = m.
+reduc forall m: bitstring, k: sskey; checksign(sign(m, k), spk(k)) = m.
+
+(* ---------- hash / KDF ---------- *)
+fun h(bitstring): bitstring.
+fun kdf(G, bitstring): bitstring.          (* MSK <- DH secret, transcript *)
+fun pmk_of(bitstring): bitstring.          (* PMK <- MSK                   *)
+
+(* ---------- symmetric encryption (to test key secrecy) ---------- *)
+fun senc(bitstring, bitstring): bitstring.
+reduc forall m: bitstring, k: bitstring; sdec(senc(m, k), k) = m.
+
+(* ---------- type conversions ---------- *)
+fun spk2b(spkey): bitstring [data, typeConverter].
+fun G2b(G): bitstring [data, typeConverter].
+
+(* ---------- the consortium ledger ----------
+   A ledger entry is public, replicated and tamper-evident. We model it as a
+   ProVerif table: anything inserted is readable by every honest participant.
+   We do NOT model it as a secret store — its contents are public by design,
+   which is exactly why it must contain no personal data.                   *)
+table memberKeys(spkey).              (* admitted consortium member AP keys *)
+table ledgerTag(bitstring, spkey).    (* tag = h(cid)  |->  issuing member   *)
+
+(* Honest-peer scoping. `memberKeys` is the real admission list and DOES
+   contain the attacker's key (a malicious admitted member). `honestMember`
+   is a modelling device only: it scopes the secrecy and device-side
+   authentication queries to sessions with an honest visited network, which
+   is the meaningful statement. The malicious-member case is inherent to
+   every link-layer roaming federation and is verified separately in
+   waf2_malicious_member.pv, where we show it is CONTAINED: a malicious
+   member still cannot impersonate a device to an honest AP.              *)
+table honestMember(spkey).
+
+(* ---------- events ---------- *)
+event SuppStarts(spkey, spkey, bitstring).      (* suppPk, asPk, pmk *)
+event ServerCompletes(spkey, spkey, bitstring). (* suppPk, asPk, pmk *)
+(* Device-side authentication agrees on (server identity, key) only: at the
+   moment the server commits it has not yet learned the device's identity,
+   so a 3-parameter agreement would be unsatisfiable by construction.   *)
+event ServerAgrees(spkey, bitstring).           (* asPk, pmk *)
+event SuppAccepts(spkey, bitstring).            (* asPk, pmk *)
+event LedgerAccepted(bitstring).
+
+(* ---------- secrecy probes ---------- *)
+free probeKey: bitstring [private].   (* sent under the derived PMK        *)
+
+(* An UNREGISTERED device: the issuer signed a certificate for it, but its tag
+   was never written to the ledger. Used to verify the authorisation property
+   itself, which is the one thing the ledger exists to do.                  *)
+free skUnreg: sskey [private].
+free cidUnreg: bitstring [private].
+
+(* ===================================================================
+   QUERIES
+   =================================================================== *)
+
+(* Q1  Session-key secrecy. The attacker — including as a malicious member
+       AP — must not learn material encrypted under the PMK of an honest
+       session.                                                            *)
+query attacker(probeKey).
+
+(* Q2  Credential-nonce secrecy. The nonce actually USED by the honest
+       supplicant must never leak; only h(cid) is public. Note this queries
+       the bound name `cid` that the protocol really uses — querying an unused
+       free name would only ask whether the attacker can invert h, which is
+       false by construction and says nothing about the protocol.           *)
+query attacker(new cid).
+
+(* Q2b AUTHORISATION. A device holding a validly-signed certificate from an
+       admitted member, but whose tag was never entered on the ledger, must
+       never be accepted. This is the property the ledger exists to provide,
+       and it must be stated separately from authentication.                *)
+(* (authorisation is verified in waf2_core.pv; omitted here) *)
+
+(* Q3  Injective agreement, server side. If the AS completes a run believing
+       it spoke to supplicant S and agreed key k, then S really did start
+       such a run, with the same key, and one-to-one (no replay).          *)
+query s: spkey, a: spkey, k: bitstring;
+    inj-event(ServerCompletes(s, a, k)) ==> inj-event(SuppStarts(s, a, k)).
+
+(* Q4  Injective agreement, supplicant side. Authenticates the VISITED
+       network to the device — this is what stops the evil-twin / rogue-AP
+       attack that the original design was wide open to.                   *)
+query a: spkey, k: bitstring;
+    inj-event(SuppAccepts(a, k)) ==> inj-event(ServerAgrees(a, k)).
+
+(* Q5  Sanity: the honest run is reachable at all (expect "false", i.e. the
+       event IS reachable — a model that verifies vacuously proves nothing). *)
+query s: spkey, a: spkey, k: bitstring; event(ServerCompletes(s, a, k)).
+
+(* ===================================================================
+   SUPPLICANT
+   Holds: its own signing key, a credential nonce cid, and a certificate
+   cert_S = sign((h(cid), spk(skS)), skIssuer) issued by a consortium member.
+   Knows the consortium member keys from the public ledger.
+   =================================================================== *)
+let processSupplicant(skS: sskey, cid: bitstring, certS: bitstring) =
+    get honestMember(pkAS) in            (* honest-peer scoping: see above *)
+    new nS: bitstring;
+    new x: exponent;
+    let gx = exp(g, x) in
+    out(c, (nS, gx));
+
+    in(c, (nAS: bitstring, gy: G, sigAS: bitstring));
+    (* authenticate the VISITED network: its signature must cover the full
+       transcript, binding both nonces and both DH shares.                *)
+    let (=nS, =nAS, =G2b(gx), =G2b(gy)) =
+        (let m = checksign(sigAS, pkAS) in
+         let (a: bitstring, b: bitstring, cc: bitstring, d: bitstring) = m in
+         (a, b, cc, d)) in
+
+    let msk = kdf(exp(gy, x), (nS, nAS)) in
+    let pmk = pmk_of(msk) in
+    event SuppStarts(spk(skS), pkAS, pmk);
+
+    out(c, (certS,
+            sign((nS, nAS, G2b(gx), G2b(gy), h(cid), spk2b(pkAS)), skS)));
+
+    event SuppAccepts(pkAS, pmk);
+    (* probe: if the attacker can read this, the PMK leaked *)
+    out(c, senc(probeKey, pmk)).
+
+(* ===================================================================
+   AUTHENTICATION SERVER of the VISITED network
+   Runs on the visited AP. Consults its LOCAL ledger replica — no proxy
+   chain, no home-AAA round trip, no central federation.
+   =================================================================== *)
+let processServer(skAS: sskey) =
+    in(c, (nS: bitstring, gx: G));
+    new nAS: bitstring;
+    new y: exponent;
+    let gy = exp(g, y) in
+    (* The commit event MUST precede the send: otherwise the supplicant can
+       consume message 2 and accept before this process executes its event,
+       which breaks agreement for scheduling reasons rather than security
+       reasons. Deriving the key first is also what an implementation does. *)
+    let msk = kdf(exp(gx, y), (nS, nAS)) in
+    let pmk = pmk_of(msk) in
+    event ServerAgrees(spk(skAS), pmk);
+    out(c, (nAS, gy, sign((nS, nAS, G2b(gx), G2b(gy)), skAS)));
+
+    in(c, (certS: bitstring, sigS: bitstring));
+
+    (* 1. the credential's issuer must be an admitted consortium member *)
+    get memberKeys(pkIssuer) in
+    let (tag: bitstring, pkS: spkey) = checksign(certS, pkIssuer) in
+
+    (* 2. the tag must be present on the ledger — the authorisation oracle *)
+    get ledgerTag(=tag, =pkIssuer) in
+    event LedgerAccepted(tag);
+
+    (* 3. proof of possession: the device must sign the live transcript,
+          including the identity of THIS server. Channel binding: a signature
+          produced for another AP's session will not verify here.          *)
+    let (=nS, =nAS, =G2b(gx), =G2b(gy), =tag, =spk2b(spk(skAS))) =
+        (let m2 = checksign(sigS, pkS) in
+         let (p: bitstring, q: bitstring, r: bitstring,
+              s2: bitstring, t: bitstring, u: bitstring) = m2 in
+         (p, q, r, s2, t, u)) in
+
+    event ServerCompletes(pkS, spk(skAS), pmk).
+
+(* ===================================================================
+   MAIN
+   =================================================================== *)
+process
+    (* --- honest home member (credential issuer) --- *)
+    new skHome: sskey;
+    let pkHome = spk(skHome) in
+    out(c, pkHome);
+    insert memberKeys(pkHome);
+    insert honestMember(pkHome);
+
+    (* --- honest visited member (the roaming target) --- *)
+    new skVisited: sskey;
+    let pkVisited = spk(skVisited) in
+    out(c, pkVisited);
+    insert memberKeys(pkVisited);
+    insert honestMember(pkVisited);
+
+    (* --- MALICIOUS consortium member: the attacker is admitted to the
+           consortium and we hand it its own key. Everything below must
+           still hold.                                                    --- *)
+    new skEvil: sskey;
+    out(c, (spk(skEvil), skEvil));
+    insert memberKeys(spk(skEvil));
+
+    (* --- an honest supplicant with a ledger-registered credential --- *)
+    new skS: sskey;
+    out(c, spk(skS));
+    new cid: bitstring;
+    out(c, h(cid));                       (* the TAG is public, cid is not *)
+    insert ledgerTag(h(cid), pkHome);
+    let certS = sign((h(cid), spk(skS)), skHome) in
+    out(c, certS);                        (* certificates are public       *)
+
+    (* The unregistered device: real certificate, no ledger entry. *)
+    out(c, spk(skUnreg));
+    out(c, h(cidUnreg));
+    let certUnreg = sign((h(cidUnreg), spk(skUnreg)), skHome) in
+    out(c, certUnreg);
+    (* deliberately NOT inserted into ledgerTag *)
+
+    (
+        ( processSupplicant(skS, cid, certS) )
+      | ( processServer(skVisited) )
+      | ( phase 1; out(c, (skS, skVisited, skHome)) )
+    )

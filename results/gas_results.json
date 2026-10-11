@@ -1,0 +1,35 @@
+{
+  "solc": "0.8.24",
+  "optimizer_runs": 200,
+  "seed": 20261011,
+  "bytecode_bytes": 8321,
+  "single_op_gas": {
+    "deploy": 1778503,
+    "admitMember_approval1": 77048,
+    "admitMember_approval2_exec": 120154,
+    "removeMember": 79173,
+    "addAdmin": 99522,
+    "removeAdmin": 77871,
+    "issueCredential": 99615,
+    "revokeBitmap_single": 48762,
+    "revoke": 31238,
+    "adminRevoke": 33422
+  },
+  "issue_batch_gas": {
+    "1": 83175,
+    "10": 546045,
+    "50": 2603623,
+    "100": 5176283
+  },
+  "revocation_256": {
+    "per_credential": 2570247,
+    "bitmap_contiguous": 49146,
+    "bitmap_scattered": 6428515,
+    "merkle_root": 48716
+  },
+  "ratios": {
+    "contiguous": 52.29819313881089,
+    "scattered": 0.39981970952856144,
+    "merkle": 52.759811971426224
+  }
+}

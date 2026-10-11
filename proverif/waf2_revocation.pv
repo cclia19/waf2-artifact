@@ -1,0 +1,166 @@
+(* ===================================================================
+   WAF-2 — REVOCATION ENFORCEMENT
+   ProVerif 2.05
+
+   Models the epoch mechanism that is WAF-2's primary revocation path.
+   Credentials are short-lived and scoped to an epoch. The consortium
+   republishes the authorisation set each epoch; a revoked credential is
+   simply not carried forward. This avoids the two problems that sink
+   revocation on an immutable ledger: it requires no deletion, and it
+   needs no negative-membership proof.
+
+   Phase 0  : epoch 0. Both credentials are authorised.
+   Phase 1  : epoch 1. cidGood is carried forward; cidRevoked is not.
+
+   The property to prove is that after the epoch rolls, an attacker who has
+   recorded EVERYTHING from phase 0 — the full transcript, the certificate,
+   the ledger tag — still cannot make an honest authentication server accept
+   the revoked credential. Note the attacker is additionally handed the
+   revoked device's own signing key at phase 1, modelling total compromise
+   of a device whose credential has been revoked. This is the scenario that
+   matters operationally: a stolen or ejected device.
+   =================================================================== *)
+
+free c: channel.
+
+type sskey.
+type spkey.
+type G.
+type exponent.
+
+const g: G.
+fun exp(G, exponent): G.
+equation forall x: exponent, y: exponent;
+    exp(exp(g, x), y) = exp(exp(g, y), x).
+
+fun spk(sskey): spkey.
+fun sign(bitstring, sskey): bitstring.
+reduc forall m: bitstring, k: sskey; checksign(sign(m, k), spk(k)) = m.
+
+fun h(bitstring): bitstring.
+fun kdf(G, bitstring): bitstring.
+fun pmk_of(bitstring): bitstring.
+
+fun spk2b(spkey): bitstring [data, typeConverter].
+fun G2b(G): bitstring [data, typeConverter].
+
+table memberKeys(spkey).
+table ledgerE0(bitstring, spkey).   (* authorisation set, epoch 0 *)
+table ledgerE1(bitstring, spkey).   (* authorisation set, epoch 1 *)
+
+(* credential nonces *)
+free cidGood:    bitstring [private].
+free cidRevoked: bitstring [private].
+
+event AcceptedE0(bitstring).
+event AcceptedE1(bitstring).
+
+(* ---- Q1  The revoked credential WAS accepted before revocation.
+            Expected: reachable (false). A model in which it was never
+            accepted would prove nothing about revocation.            ---- *)
+query event(AcceptedE0(h(cidRevoked))).
+
+(* ---- Q2  THE SAFETY PROPERTY. After the epoch rolls, no honest server
+            ever accepts the revoked credential — even though the attacker
+            holds the device's signing key, its certificate, its ledger tag
+            and every phase-0 transcript.
+            Expected: unreachable (true).                              ---- *)
+query event(AcceptedE1(h(cidRevoked))).
+
+(* ---- Q3  Liveness: revocation must not break the surviving credential.
+            Expected: reachable (false).                               ---- *)
+query event(AcceptedE1(h(cidGood))).
+
+(* ------------------------------------------------------------------ *)
+let processSupplicant(skS: sskey, cid: bitstring, certS: bitstring, pkAS: spkey) =
+    new nS: bitstring;
+    new x: exponent;
+    let gx = exp(g, x) in
+    out(c, (nS, gx));
+    in(c, (nAS: bitstring, gy: G, sigAS: bitstring));
+    let (=nS, =nAS, =G2b(gx), =G2b(gy)) =
+        (let m = checksign(sigAS, pkAS) in
+         let (a: bitstring, b: bitstring, cc: bitstring, d: bitstring) = m in
+         (a, b, cc, d)) in
+    out(c, (certS,
+            sign((nS, nAS, G2b(gx), G2b(gy), h(cid), spk2b(pkAS)), skS))).
+
+(* Epoch-0 authentication server *)
+let processServerE0(skAS: sskey) =
+    in(c, (nS: bitstring, gx: G));
+    new nAS: bitstring;
+    new y: exponent;
+    let gy = exp(g, y) in
+    out(c, (nAS, gy, sign((nS, nAS, G2b(gx), G2b(gy)), skAS)));
+    in(c, (certS: bitstring, sigS: bitstring));
+    get memberKeys(pkIssuer) in
+    let (tag: bitstring, pkS: spkey) = checksign(certS, pkIssuer) in
+    get ledgerE0(=tag, =pkIssuer) in
+    let (=nS, =nAS, =G2b(gx), =G2b(gy), =tag, =spk2b(spk(skAS))) =
+        (let m2 = checksign(sigS, pkS) in
+         let (p: bitstring, q: bitstring, r: bitstring,
+              s2: bitstring, t: bitstring, u: bitstring) = m2 in
+         (p, q, r, s2, t, u)) in
+    event AcceptedE0(tag).
+
+(* Epoch-1 authentication server: identical except that it consults the
+   epoch-1 authorisation set. This is the only change revocation requires. *)
+let processServerE1(skAS: sskey) =
+    in(c, (nS: bitstring, gx: G));
+    new nAS: bitstring;
+    new y: exponent;
+    let gy = exp(g, y) in
+    out(c, (nAS, gy, sign((nS, nAS, G2b(gx), G2b(gy)), skAS)));
+    in(c, (certS: bitstring, sigS: bitstring));
+    get memberKeys(pkIssuer) in
+    let (tag: bitstring, pkS: spkey) = checksign(certS, pkIssuer) in
+    get ledgerE1(=tag, =pkIssuer) in
+    let (=nS, =nAS, =G2b(gx), =G2b(gy), =tag, =spk2b(spk(skAS))) =
+        (let m2 = checksign(sigS, pkS) in
+         let (p: bitstring, q: bitstring, r: bitstring,
+              s2: bitstring, t: bitstring, u: bitstring) = m2 in
+         (p, q, r, s2, t, u)) in
+    event AcceptedE1(tag).
+
+(* ------------------------------------------------------------------ *)
+process
+    new skIssuer: sskey;
+    let pkIssuer = spk(skIssuer) in
+    out(c, pkIssuer);
+    insert memberKeys(pkIssuer);
+
+    new skAS: sskey;
+    let pkAS = spk(skAS) in
+    out(c, pkAS);
+    insert memberKeys(pkAS);
+
+    (* device whose credential survives the epoch roll *)
+    new skGood: sskey;
+    out(c, spk(skGood));
+    out(c, h(cidGood));
+    let certGood = sign((h(cidGood), spk(skGood)), skIssuer) in
+    out(c, certGood);
+    insert ledgerE0(h(cidGood), pkIssuer);
+    insert ledgerE1(h(cidGood), pkIssuer);          (* carried forward *)
+
+    (* device whose credential is revoked at the epoch roll *)
+    new skBad: sskey;
+    out(c, spk(skBad));
+    out(c, h(cidRevoked));
+    let certBad = sign((h(cidRevoked), spk(skBad)), skIssuer) in
+    out(c, certBad);
+    insert ledgerE0(h(cidRevoked), pkIssuer);
+    (* deliberately NOT inserted into ledgerE1 — this is the revocation *)
+
+    (
+        ( ! processSupplicant(skGood, cidGood,    certGood, pkAS) )
+      | ( ! processSupplicant(skBad,  cidRevoked, certBad,  pkAS) )
+      | ( ! processServerE0(skAS) )
+      | ( ! processServerE1(skAS) )
+      | (
+          (* total compromise of the revoked device at the epoch roll:
+             hand the attacker its signing key and its credential nonce. *)
+          phase 1;
+          out(c, (skBad, cidRevoked))
+        )
+    )

@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this artefact, please cite the paper below."
+title: "WAF-2: A Consortium-Ledger Trust Registry for Cross-Domain Wi-Fi Roaming — research artefact"
+abstract: >-
+  Reproducibility artefact for WAF-2: a permissioned consortium-ledger trust
+  registry that supplies membership and revocation for cross-domain Wi-Fi
+  roaming while leaving IEEE 802.1X/EAP-TLS and the 802.11i four-way handshake
+  unmodified. Contains the Solidity registry, five ProVerif models, a
+  deterministic EVM gas benchmark, and a harness that measures revocation
+  propagation on live multi-node Clique consortia.
+type: software
+authors:
+  - family-names: Aun
+    given-names: Yichiet
+    affiliation: "Universiti Tunku Abdul Rahman (UTAR)"
+  - family-names: Ng
+    given-names: "Miao Xuan"
+    affiliation: "Universiti Tunku Abdul Rahman (UTAR)"
+  - family-names: Wadho
+    given-names: "Shuaib Ahmed"
+    affiliation: "Universiti Tunku Abdul Rahman (UTAR)"
+license: MIT
+keywords:
+  - Wi-Fi roaming
+  - IEEE 802.1X
+  - Passpoint
+  - OpenRoaming
+  - consortium blockchain
+  - credential revocation
+  - formal verification
+  - ProVerif
